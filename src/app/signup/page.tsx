@@ -3,17 +3,21 @@
 import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check, ChevronsUpDown } from "lucide-react"
+// WICHTIG: Supabase Client importieren
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+// ... (weitere Imports bleiben gleich)
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from "@/components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
-import { Slider } from "@/components/ui/slider"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Slider } from "@/components/ui/slider";
 import { cn } from '@/lib/utils';
+
 
 // --- HELPER ICONS & COMPONENTS ---
 
@@ -63,9 +67,6 @@ const fundingStageOptions: { id: FundingStage; label: string }[] = [
 
 const ticketSizeLabels = ["bis 25.000€", "bis 50.000€", "bis 100.000€", "bis 150.000€", "bis 250.000€", "mehr"];
 
-const TOTAL_STEPS = 4;
-
-
 const FundingStageSlider = ({ value, onChange }: { value: FundingStage; onChange: (value: FundingStage) => void }) => {
     const currentIndex = useMemo(() => fundingStageOptions.findIndex(opt => opt.id === value), [value]);
     const totalSteps = fundingStageOptions.length - 1;
@@ -109,10 +110,15 @@ const FundingStageSlider = ({ value, onChange }: { value: FundingStage; onChange
         </div>
     );
 };
+const TOTAL_STEPS = 4;
 
 export default function SignupPage() {
   const router = useRouter();
+  // Supabase Client initialisieren
+  const supabase = createClientComponentClient();
   const [currentStep, setCurrentStep] = useState(1);
+  const [error, setError] = useState<string | null>(null); // Für Fehlermeldungen
+
   const [formData, setFormData] = useState({
     role: "" as UserRole | "",
     startupName: "",
@@ -127,6 +133,8 @@ export default function SignupPage() {
     linkedIn: "",
     email: "",
     phoneNumber: "",
+    password: "", // NEU
+    confirmPassword: "", // NEU
   });
 
   const isCurrentStepValid = useMemo(() => {
@@ -137,18 +145,90 @@ export default function SignupPage() {
         if (formData.role === 'angel-investor' || formData.role === 'vc') return formData.investorIndustries.length > 0 && formData.investmentStages.length > 0;
         return true; 
       case 3: return formData.firstName.trim() !== "" && formData.lastName.trim() !== "";
-      case 4: return /\S+@\S+\.\S+/.test(formData.email) && formData.phoneNumber.trim() !== "";
+      case 4:
+        return (
+          /\S+@\S+\.\S+/.test(formData.email) &&
+          formData.phoneNumber.trim() !== "" &&
+          formData.password.length >= 8 && // Passwortlänge prüfen
+          formData.password === formData.confirmPassword // Passwörter müssen übereinstimmen
+        );
       default: return false;
     }
   }, [currentStep, formData]);
 
   const handleNextStep = () => { if (isCurrentStepValid && currentStep < TOTAL_STEPS) setCurrentStep(currentStep + 1); };
   const handlePrevStep = () => { if (currentStep > 1) setCurrentStep(currentStep - 1); };
-  const handleFinalSubmit = () => {
+  const handleFinalSubmit = async () => {
     if (!isCurrentStepValid) return;
-    console.log("Formulardaten:", formData);
-    if (formData.role === 'startup') router.push('/dashboard');
-    else router.push('/feed');
+    setError(null);
+
+    try {
+      // 1. Benutzer bei Supabase Auth registrieren
+      const { data: { user }, error: authError } = await supabase.auth.signUp({
+        email: formData.email,
+        password: formData.password,
+        options: {
+          // Metadaten, die direkt im auth.users Objekt gespeichert werden
+          data: {
+            first_name: formData.firstName,
+            last_name: formData.lastName,
+          }
+        }
+      });
+
+      if (authError) throw authError;
+      if (!user) throw new Error("Benutzer konnte nicht erstellt werden.");
+
+      // 2. Gemeinsame Profildaten in 'profiles' Tabelle speichern
+      const { error: profileError } = await supabase.from('profiles').insert({
+        id: user.id,
+        first_name: formData.firstName,
+        last_name: formData.lastName,
+        role: formData.role,
+        linkedin_profile: formData.linkedIn,
+        phone_number: formData.phoneNumber
+      });
+      if (profileError) throw profileError;
+
+      // 3. Rollenspezifische Daten speichern
+      if (formData.role === 'startup') {
+        const { error: startupDetailsError } = await supabase.from('startup_details').insert({
+          user_id: user.id,
+          startup_name: formData.startupName,
+          website: formData.website,
+          funding_stage: formData.fundingStage
+        });
+        if (startupDetailsError) throw startupDetailsError;
+
+        const goalsToInsert = formData.goals.map(goal => ({ user_id: user.id, goal }));
+        const { error: startupGoalsError } = await supabase.from('startup_goals').insert(goalsToInsert);
+        if (startupGoalsError) throw startupGoalsError;
+      
+      } else if (formData.role === 'angel-investor' || formData.role === 'vc') {
+        const { error: investorDetailsError } = await supabase.from('investor_details').insert({
+            user_id: user.id,
+            ticket_size_label: ticketSizeLabels[formData.ticketSize[0]]
+        });
+        if (investorDetailsError) throw investorDetailsError;
+
+        const industriesToInsert = formData.investorIndustries.map(industry => ({ user_id: user.id, industry }));
+        const { error: industriesError } = await supabase.from('investor_industries').insert(industriesToInsert);
+        if (industriesError) throw industriesError;
+
+        const stagesToInsert = formData.investmentStages.map(stage => ({ user_id: user.id, stage }));
+        const { error: stagesError } = await supabase.from('investor_stages').insert(stagesToInsert);
+        if (stagesError) throw stagesError;
+      }
+
+      // 4. Bei Erfolg weiterleiten
+      if (formData.role === 'startup') router.push('/dashboard');
+      else router.push('/feed');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message);
+    }
   };
 
   return (
@@ -198,7 +278,7 @@ export default function SignupPage() {
             </div>
           )}
            
-           {currentStep === 3 && (
+          {currentStep === 3 && (
             <div className="space-y-6">
                 <div className="space-y-2 rounded-md border border-gray-800 bg-gray-900/50 p-4">
                     <p className="font-bold text-white">Persönliche Angaben</p>
@@ -217,26 +297,40 @@ export default function SignupPage() {
                     <Input id="linkedIn" placeholder="https://www.linkedin.com/in/..." value={formData.linkedIn} onChange={(e) => setFormData({ ...formData, linkedIn: e.target.value })}/>
                 </div>
             </div>
-           )}
+          )}
 
-           {currentStep === 4 && (
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <Label htmlFor="email" className="text-lg font-bold">Deine Email-Adresse</Label>
-                <Input id="email" type="email" placeholder="name@example.com" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+          {currentStep === 4 && (
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <Label htmlFor="email" className="text-lg font-bold">Deine Email-Adresse</Label>
+                  <Input id="email" type="email" placeholder="name@example.com" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phoneNumber" className="text-lg font-bold">Handynummer</Label>
+                  <p className="text-sm text-gray-400">Zum Launch schicken wir dir deinen Einladungscode per SMS.</p>
+                  <Input id="phoneNumber" type="tel" placeholder="+49 123 4567890" value={formData.phoneNumber} onChange={(e) => setFormData({ ...formData, phoneNumber: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password" className="text-lg font-bold">Passwort</Label>
+                  <Input id="password" type="password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirmPassword" className="text-lg font-bold">Passwort bestätigen</Label>
+                  <Input id="confirmPassword" type="password" value={formData.confirmPassword} onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })} />
+                  {formData.password !== formData.confirmPassword && formData.confirmPassword && (
+                    <p className="text-sm text-red-500">Die Passwörter stimmen nicht überein.</p>
+                  )}
+                </div>
+
+                {error && <p className="text-sm text-red-500 text-center">{error}</p>}
+
+                <div className="pt-4 text-center">
+                  <p className="text-xs text-gray-500">
+                    Mit der Anmeldung akzeptierst du unseren Datenschutz. Deine Daten werden nicht weitergegeben und sind für niemanden extern sichtbar.
+                  </p>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="phoneNumber" className="text-lg font-bold">Handynummer</Label>
-                <p className="text-sm text-gray-400">Zum Launch schicken wir dir deinen Einladungscode per SMS.</p>
-                <Input id="phoneNumber" type="tel" placeholder="+49 123 4567890" value={formData.phoneNumber} onChange={(e) => setFormData({ ...formData, phoneNumber: e.target.value })} />
-              </div>
-              <div className="pt-4 text-center">
-                <p className="text-xs text-gray-500">
-                  Mit der Anmeldung akzeptierst du unseren Datenschutz. Deine Daten werden nicht weitergegeben und sind für niemanden extern sichtbar.
-                </p>
-              </div>
-            </div>
-           )}
+            )}
 
         </CardContent>
         <CardFooter>

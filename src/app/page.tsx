@@ -1,5 +1,5 @@
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
 // Ein Platzhalter-Icon für Ihr Logo. Sie können dies durch Ihr eigenes SVG oder <Image>-Tag ersetzen.
 const LogoIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -43,10 +43,7 @@ export default function WelcomePage() {
           </p>
           <div className="mt-8 flex flex-col sm:flex-row justify-center gap-4">
             <Link href="/signup" passHref className="w-full sm:w-auto">
-              <Button
-                className="w-full sm:w-auto text-lg"
-                size="lg"
-              >
+              <Button className="w-full sm:w-auto text-lg" size="lg">
                 Jetzt Registrieren
               </Button>
             </Link>
@@ -66,7 +63,10 @@ export default function WelcomePage() {
       {/* FOOTER */}
       <footer className="w-full p-4 sm:p-6">
         <div className="flex flex-col sm:flex-row items-center justify-between text-sm text-gray-500">
-          <p>&copy; {new Date().getFullYear()} StartupMatch Inc. Alle Rechte vorbehalten.</p>
+          <p>
+            &copy; {new Date().getFullYear()} StartupMatch Inc. Alle Rechte
+            vorbehalten.
+          </p>
           <div className="flex gap-4 mt-2 sm:mt-0">
             <Link href="/terms" className="hover:text-[#00ff88]">
               Nutzungsbedingungen
